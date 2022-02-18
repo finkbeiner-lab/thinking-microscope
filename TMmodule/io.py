@@ -5,6 +5,7 @@ import cv2
 import tifffile
 import logging, pathlib, sys
 from pathlib import Path
+import pdb
 
 from . import utils, plot, transforms
 
@@ -96,26 +97,27 @@ def imsave(filename, arr):
         cv2.imwrite(filename, arr)
 #         skimage.io.imsave(filename, arr.astype()) #cv2 doesn't handle transparency
 
-def get_image_files(folder, mask_filter, imf=None, look_one_level_down=False):
+def  get_image_files(folder, mask_filter, imf=None, look_one_level_down=False):
     """ find all images in a folder and if look_one_level_down all subfolders """
     mask_filters = ['_cp_masks', '_cp_output', '_flows', mask_filter]
     image_names = []
     if imf is None:
         imf = ''
     
+    folder = os.path.join(folder, "image")
     folders = []
     if look_one_level_down:
         folders = natsorted(glob.glob(os.path.join(folder, "*/")))
     folders.append(folder)
 
     for folder in folders:
-        image_names.extend(glob.glob(folder + '/*%s.png'%imf))
-        image_names.extend(glob.glob(folder + '/*%s.jpg'%imf))
-        image_names.extend(glob.glob(folder + '/*%s.jpeg'%imf))
         image_names.extend(glob.glob(folder + '/*%s.tif'%imf))
-        image_names.extend(glob.glob(folder + '/*%s.tiff'%imf))
+     
+    # natsorted identifies numbers anywhere in a string and sorts them naturally
     image_names = natsorted(image_names)
     imn = []
+
+    # ToDO- Vivek: No Idea what it is doing 
     for im in image_names:
         imfile = os.path.splitext(im)[0]
         igood = all([(len(imfile) > len(mask_filter) and imfile[-len(mask_filter):] != mask_filter) or len(imfile) < len(mask_filter) 
@@ -131,34 +133,20 @@ def get_image_files(folder, mask_filter, imf=None, look_one_level_down=False):
     
     return image_names
         
-def get_label_files(image_names, mask_filter, imf=None):
-    nimg = len(image_names)
-    label_names0 = [os.path.splitext(image_names[n])[0] for n in range(nimg)]
+def get_label_files(label_dir, mask_filter, imf=None):
 
-    if imf is not None and len(imf) > 0:
-        label_names = [label_names0[n][:-len(imf)] for n in range(nimg)]
-    else:
-        label_names = label_names0
-        
-    # check for flows
-    if os.path.exists(label_names0[0] + '_flows.tif'):
-        flow_names = [label_names0[n] + '_flows.tif' for n in range(nimg)]
-    else:
-        flow_names = [label_names[n] + '_flows.tif' for n in range(nimg)]
-    if not all([os.path.exists(flow) for flow in flow_names]):
-        print('Not all flows are present. Run flow generation again.')
-        flow_names = None
+    label_names = glob.glob(os.path.join(label_dir, "*.tif"))
+
+    flow_names = []
+
+    for i in range (len(label_names)):
+        x = label_names[i].split('.tif')
+        x = x[0] + "_flows.tif"
+        flow_names.append(x)
     
-    # check for masks
-    if os.path.exists(label_names[0] + mask_filter + '.tif'):
-        label_names = [label_names[n] + mask_filter + '.tif' for n in range(nimg)]
-    elif os.path.exists(label_names[0] + mask_filter + '.png'):
-        label_names = [label_names[n] + mask_filter + '.png' for n in range(nimg)]
-    else:
-        raise ValueError('labels not provided with correct --mask_filter')
-    if not all([os.path.exists(label) for label in label_names]):
-        raise ValueError('labels not provided for all images in train and/or test set')
+    flow_names = None
 
+   
     return label_names, flow_names
 
 
@@ -168,7 +156,8 @@ def load_train_test_data(train_dir, test_dir=None, image_filter=None, mask_filte
     images = [imread(image_names[n]) for n in range(nimg)]
 
     # training data
-    label_names, flow_names = get_label_files(image_names, mask_filter, imf=image_filter)
+    label_dir = os.path.join(train_dir,"label")
+    label_names, flow_names = get_label_files(label_dir, mask_filter, imf=image_filter)
     nimg = len(image_names)
     labels = [imread(label_names[n]) for n in range(nimg)]
     if flow_names is not None and not unet:
