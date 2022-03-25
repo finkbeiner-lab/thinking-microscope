@@ -6,6 +6,7 @@ from natsort import natsorted
 from tqdm import tqdm
 import pdb
 from TMmodule import utils, models, io
+import matplotlib.pyplot as plt
 
 import logging
 logger = logging.getLogger(__name__)
@@ -15,9 +16,9 @@ def main():
 
 
     input_img_args = parser.add_argument_group("input image arguments")
-    input_img_args.add_argument('--look_one_level_down', action='store_true', help='run processing on all subdirectories of current folder')
+    input_img_args.add_argument('--look_one_level_down', default=False, action='store_true', help='run processing on all subdirectories of current folder')
     input_img_args.add_argument('--dir',
-                        default=[], type=str, help='folder containing data to run or train on.')
+                        default='/home/vivek/Datasets/Resize-224/D1', type=str, help='folder containing data to run or train on.')
     input_img_args.add_argument('--mxnet', action='store_true', help='use mxnet')
     input_img_args.add_argument('--all_channels', action='store_true', help='use all channels in image if using own model and images with special channels')
 
@@ -63,7 +64,6 @@ def main():
     cytoplasmic = 'cyto' in args.pretrained_model
     szmean = 30.
     rescale = True
-
     # find images
     img_filter = []
     if len(img_filter)>0:
@@ -81,7 +81,18 @@ def main():
     test_dir = None if len(args.test_dir)==0 else args.test_dir
 
     output = io.load_train_test_data(args.dir, test_dir, imf, args.mask_filter, args.unet, args.look_one_level_down)
-    images, labels, image_names, test_images, test_labels, image_names_test = output
+    images, labels, image_names, test_images, test_labels, image_names_test, segmentation_labels , test_segmentation_labels, test_gedi_labels, gedi_labels = output
+
+    train_labels = {'cp_labels': labels,
+                    'segmentation_labels': segmentation_labels,
+                    'gedi_labels': gedi_labels
+                    }
+    
+    test_labels = {'cp_labels': test_labels,
+                'segmentation_labels': test_segmentation_labels,
+                'gedi_labels': test_gedi_labels
+                }
+                    
 
     # training with all channels
     if args.all_channels:
@@ -105,16 +116,16 @@ def main():
                                             concatenation=args.concatenation,
                                             nclasses=args.nclasses,
                                             nchan=nchan,
-                                            omni=args.omni)
+                                            omni=False)
 
     
     
     
 
     # Train Segmentation Model
-    cpmodel_path = model.train(images, labels, train_files=image_names,
+    cpmodel_path = model.train(images, train_labels, train_files=image_names,
                                            test_data=test_images, test_labels=test_labels, test_files=image_names_test,
-                                           learning_rate=args.learning_rate, channels=channels,
+                                           learning_rate=args.learning_rate, channels=3,
                                            save_path=os.path.realpath(args.dir), save_every=args.save_every,
                                            save_each=args.save_each,
                                            rescale=rescale,n_epochs=args.n_epochs,
@@ -122,7 +133,18 @@ def main():
 
    
     logger.info('>>>> model trained and saved to %s'%cpmodel_path)
+    
+    cellpose_output, reconstruction_output, gedi_output = model.eval(images)
 
+    for i in range(len(reconstruction_output[0])):
+        x = reconstruction_output[0][i]
+        # x = x.transpose(1,2,0)
+        pdb.set_trace()
+        plt.imshow(x)
+        save_name = 'test_{i}.jpg'
+        plt.savefig(save_name.format(i=i))
+    # plt.imshow(reconstruction_output[0][0])
+    # plt.savefig('test.png')
     
 
 

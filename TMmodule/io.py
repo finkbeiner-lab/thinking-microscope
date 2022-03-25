@@ -183,7 +183,10 @@ def load_train_test_data(train_dir, test_dir=None, image_filter=None, mask_filte
                     test_labels[n] = np.concatenate((test_labels[n][np.newaxis,:,:], flows), axis=0) 
                 else:
                     test_labels[n] = flows
-    return images, labels, image_names, test_images, test_labels, image_names_test
+    segmentation_labels = test_segmentation_labels = test_gedi_labels = gedi_labels = None
+
+    #@ToDo: return a dict with proper labels from galaxy
+    return images, labels, image_names, test_images, test_labels, image_names_test, segmentation_labels , test_segmentation_labels ,test_gedi_labels,  gedi_labels
 
 
 

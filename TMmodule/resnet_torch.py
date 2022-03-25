@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
 import datetime
+import pdb
 
 
 from . import transforms, io, dynamics, utils
@@ -118,6 +119,25 @@ class resup(nn.Module):
         x = self.proj(x) + self.conv[1](style, self.conv[0](x) + y, mkldnn=mkldnn)
         x = x + self.conv[3](style, self.conv[2](style, x, mkldnn=mkldnn), mkldnn=mkldnn)
         return x
+
+class resupconv(nn.Module):
+    def __init__(self, in_channels, out_channels, style_channels, sz, concatenation=False):
+        super().__init__()
+        self.conv = nn.Sequential()
+        self.conv.add_module('conv_0', batchconv(in_channels, out_channels, sz))
+        self.conv.add_module('conv_1', batchconv(out_channels, out_channels,  sz))
+        self.conv.add_module('conv_2', batchconv(out_channels, out_channels,  sz))
+        self.conv.add_module('conv_3', batchconv(out_channels, out_channels,  sz))
+        self.proj  = batchconv0(in_channels, out_channels, 1)
+
+    def forward(self, x, mkldnn=False):
+
+        try:
+            x = self.proj(x) + self.conv[1](self.conv[0](x))
+        except:
+            print("test")
+        x = x + self.conv[3](self.conv[2](x))
+        return x
     
 class convup(nn.Module):
     def __init__(self, in_channels, out_channels, style_channels, sz, concatenation=False):
@@ -149,6 +169,7 @@ class upsample(nn.Module):
         super().__init__()
         self.upsampling = nn.Upsample(scale_factor=2, mode='nearest')
         self.up = nn.Sequential()
+       
         for n in range(1,len(nbase)):
             if residual_on:
                 self.up.add_module('res_up_%d'%(n-1), 
@@ -160,11 +181,28 @@ class upsample(nn.Module):
     def forward(self, style, xd, mkldnn=False):
         x = self.up[-1](xd[-1], xd[-1], style, mkldnn=mkldnn)
         for n in range(len(self.up)-2,-1,-1):
-            if mkldnn:
-                x = self.upsampling(x.to_dense()).to_mkldnn()
-            else:
-                x = self.upsampling(x)
+            x = self.upsampling(x)
             x = self.up[n](x, xd[n], style, mkldnn=mkldnn)
+        return x
+
+class upsampleNostyle(nn.Module):
+    def __init__(self, nbase, sz, output_dims, residual_on=True, concatenation=False):
+        super().__init__()
+        self.upsampling = nn.Upsample(scale_factor=2, mode='nearest')
+        self.up = nn.Sequential()
+        self.output = nn.Conv2d(nbase[0], output_dims, 1, padding=1//2)
+
+        for n in range(1,len(nbase)):
+            self.up.add_module('res_up_%d'%(n-1), 
+                resupconv(nbase[n], nbase[n-1], nbase[-1], sz, concatenation))
+           
+           
+    def forward(self, xd, mkldnn=False):
+        x = self.up[-1](xd[-1], mkldnn=mkldnn)
+        for n in range(len(self.up)-2,-1,-1):
+            x = self.upsampling(x)
+            x = self.up[n](x)
+        x = self.output(x)
         return x
     
 class CPnet(nn.Module):
@@ -181,28 +219,44 @@ class CPnet(nn.Module):
         self.downsample = downsample(nbase, sz, residual_on=residual_on)
         nbaseup = nbase[1:]
         nbaseup.append(nbaseup[-1])
-        self.upsample = upsample(nbaseup, sz, residual_on=residual_on, concatenation=concatenation)
+
         self.make_style = make_style()
         self.output = batchconv(nbaseup[0], nout, 1)
         self.style_on = style_on
+
+        # Create output heads for different tasks
+        self.cellpose_output = upsample(nbaseup, sz, residual_on=residual_on, concatenation=concatenation)
+        self.autoencode_output = upsampleNostyle([256, 256, 256, 256, 256], sz, output_dims=255, residual_on=residual_on, concatenation=concatenation)
+        self.gedi_output = nn.Sequential(
+            nn.Linear(nbase[-1], nbase[-1]),
+            nn.ReLU(),
+            nn.Linear(nbase[-1], nbase[-1]),
+            nn.ReLU(),
+            nn.Linear(nbase[-1], 1)
+        )
         
     def forward(self, data):
-        if self.mkldnn:
-            data = data.to_mkldnn()
+
+        # Made changes Vivek
         T0    = self.downsample(data)
-        if self.mkldnn:
-            style = self.make_style(T0[-1].to_dense()) 
-        else:
-            style = self.make_style(T0[-1])
+        style = self.make_style(T0[-1])
         style0 = style
         if not self.style_on:
             style = style * 0
-        T0 = self.upsample(style, T0, self.mkldnn)
-        T0    = self.output(T0)
-        if self.mkldnn:
-            T0 = T0.to_dense()    
-            #T1 = T1.to_dense()    
-        return T0, style0
+
+        # Run the output heads
+        cellpose_output = self.cellpose_output(style, T0, self.mkldnn)
+        reconstruction = self.autoencode_output(T0)
+        cellpose_output = self.output(cellpose_output)
+        gedi_output = self.gedi_output(T0[-1].mean((2, 3)))
+        
+        outputs = {
+            "cellpose_output": cellpose_output,
+            "reconstruction_output": reconstruction,
+            "gedi_output": gedi_output,
+            "style0" : style0
+        }  
+        return outputs
 
     def save_model(self, filename):
         torch.save(self.state_dict(), filename)

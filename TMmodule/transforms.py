@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 import cv2
+import pdb
 
 import logging
 transforms_logger = logging.getLogger(__name__)
@@ -412,16 +413,16 @@ def reshape_train_test(train_data, train_labels, test_data, test_labels, channel
     """ check sizes and reshape train and test data for training """
     nimg = len(train_data)
     # check that arrays are correct size
-    if nimg != len(train_labels):
-        error_message = 'train data and labels not same length'
-        transforms_logger.critical(error_message)
-        raise ValueError(error_message)
-        return
-    if train_labels[0].ndim < 2 or train_data[0].ndim < 2:
-        error_message = 'training data or labels are not at least two-dimensional'
-        transforms_logger.critical(error_message)
-        raise ValueError(error_message)
-        return
+    # if nimg != len(train_labels):
+    #     error_message = 'train data and labels not same length'
+    #     transforms_logger.critical(error_message)
+    #     raise ValueError(error_message)
+    #     return
+    # if train_labels[0].ndim < 2 or train_data[0].ndim < 2:
+    #     error_message = 'training data or labels are not at least two-dimensional'
+    #     transforms_logger.critical(error_message)
+    #     raise ValueError(error_message)
+    #     return
 
     if train_data[0].ndim > 3:
         error_message = 'training data is more than three-dimensional (should be 2D or 3D array)'
@@ -429,10 +430,10 @@ def reshape_train_test(train_data, train_labels, test_data, test_labels, channel
         raise ValueError(error_message)
         return
 
-    # check if test_data correct length
-    if not (test_data is not None and test_labels is not None and
-            len(test_data) > 0 and len(test_data)==len(test_labels)):
-        test_data = None
+    # # check if test_data correct length
+    # if not (test_data is not None and test_labels is not None and
+    #         len(test_data) > 0 and len(test_data)==len(test_labels)):
+    #     test_data = None
 
     # make data correct shape and normalize it so that 0 and 1 are 1st and 99th percentile of data
     train_data, test_data, run_test = reshape_and_normalize_data(train_data, test_data=test_data, 
@@ -446,7 +447,7 @@ def reshape_train_test(train_data, train_labels, test_data, test_labels, channel
 
     if not run_test:
         transforms_logger.info('NOTE: test data not provided OR labels incorrect OR not same number of channels as train data')
-        test_data, test_labels = None, None
+        test_data, test_labels = None, {'cp_labels': None}
 
     return train_data, train_labels, test_data, test_labels, run_test
 

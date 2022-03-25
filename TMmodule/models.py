@@ -79,7 +79,6 @@ class Cellpose():
             if not MXNET_ENABLED:
                 torch = True
         self.torch = torch
-        pdb.set_trace()
         
         # assign device (GPU or CPU)
         sdevice, gpu = assign_device(self.torch, gpu)
@@ -426,7 +425,7 @@ class CellposeModel(UnetModel):
                                                                                    ostr[concatenation],
                                                                                    omnistr[omni]) 
     
-    def eval(self, x, batch_size=8, channels=None, channel_axis=None, 
+    def eval(self, x, batch_size=1, channels=None, channel_axis=None, 
              z_axis=None, normalize=True, invert=False, 
              rescale=None, diameter=None, do_3D=False, anisotropy=None, net_avg=True, 
              augment=False, tile=True, tile_overlap=0.1,
@@ -550,7 +549,7 @@ class CellposeModel(UnetModel):
                 flows[k][2] = scalar cell probability (Cellpose) or distance transform (Omnipose)
                 flows[k][3] = boundary output (nonempty for Omnipose)
                 flows[k][4] = final pixel locations after Euler integration 
-                flows[k][5] = pixel traces (nonempty for calc_trace=True)
+                flows[k][5] = pixcpel traces (nonempty for calc_trace=True)
 
             styles: list of 1D arrays of length 64, or single 1D array (if do_3D=True)
                 style vector summarizing each image, also used to estimate size of objects in image
@@ -571,9 +570,10 @@ class CellposeModel(UnetModel):
                 torch.cuda.empty_cache() #attempt to clear memory before evaluation
                 maski, stylei, flowi = self.eval(x[i], 
                                                  batch_size=batch_size, 
-                                                 channels=channels[i] if (len(channels)==len(x) and 
-                                                                          (isinstance(channels[i], list) or isinstance(channels[i], np.ndarray)) and
-                                                                          len(channels[i])==2) else channels, 
+                                                 channels=None,
+                                                #  channels=channels[i] if (len(channels)==len(x) and 
+                                                #                           (isinstance(channels[i], list) or isinstance(channels[i], np.ndarray)) and
+                                                                        #   len(channels[i])==2) else channels, 
                                                  channel_axis=channel_axis, 
                                                  z_axis=z_axis, 
                                                  normalize=normalize, 
@@ -847,15 +847,14 @@ class CellposeModel(UnetModel):
                                                                                                    test_data, test_labels,
                                                                                                    channels, normalize, omni)
         # check if train_labels have flows
-        pdb.set_trace()
-        train_flows = dynamics.labels_to_flows(train_labels, files=train_files, use_gpu=self.gpu, device=self.device, omni=omni)
+        train_labels['cp_labels'] = dynamics.labels_to_flows(train_labels['cp_labels'], files=train_files, use_gpu=self.gpu, device=self.device, omni=omni)
         if run_test:
-            test_flows = dynamics.labels_to_flows(test_labels, files=test_files, use_gpu=self.gpu, device=self.device)
+            test_labels['cp_labels'] = dynamics.labels_to_flows(test_labels['cp_labels'], files=test_files, use_gpu=self.gpu, device=self.device)
         else:
-            test_flows = None
+            test_labels = None
         
-        model_path = self._train_net(train_data, train_flows, 
-                                     test_data, test_flows,
+        model_path = self._train_net(train_data, train_labels, 
+                                     test_data, test_labels,
                                      pretrained_model, save_path, save_every, save_each,
                                      learning_rate, n_epochs, momentum, weight_decay, SGD, 
                                      batch_size, rescale)

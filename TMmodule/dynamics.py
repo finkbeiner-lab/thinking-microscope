@@ -596,6 +596,7 @@ def labels_to_flows(labels, files=None, use_gpu=False, device=None, omni=False,r
 
     """
     nimg = len(labels)
+    
     if labels[0].ndim < 3:
         labels = [labels[n][np.newaxis,:,:] for n in range(nimg)]
 
@@ -619,6 +620,7 @@ def labels_to_flows(labels, files=None, use_gpu=False, device=None, omni=False,r
     else:
         dynamics_logger.info('flows precomputed')
         flows = [labels[n].astype(np.float32) for n in range(nimg)]
+    
     return flows
 
 

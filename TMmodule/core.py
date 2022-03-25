@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import tempfile
 import cv2
 from . import transforms, dynamics, utils, plot, metrics
+import pdb
 
 try:
     from mxnet import gluon, nd
@@ -152,9 +153,11 @@ class UnetModel():
         if pretrained_model:
             core_logger.info(f'u-net net type: {self.net_type}')
         # create network
+
         self.nclasses = nclasses
         self.nbase = [32,64,128,256]
         self.nchan = nchan
+
         if self.torch:
             self.nbase = [nchan, 32, 64, 128, 256]
             self.net = resnet_torch.CPnet(self.nbase, 
@@ -164,14 +167,7 @@ class UnetModel():
                                           style_on=style_on,
                                           concatenation=concatenation,
                                           mkldnn=self.mkldnn).to(self.device)
-        else:
-            self.net = resnet_style.CPnet(self.nbase, nout=self.nclasses,
-                                        residual_on=residual_on, 
-                                        style_on=style_on,
-                                        concatenation=concatenation)
-            self.net.hybridize(static_alloc=True, static_shape=True)
-            self.net.initialize(ctx = self.device)
-
+        
         if pretrained_model is not None and isinstance(pretrained_model, str):
             self.net.load_model(pretrained_model, cpu=(not self.gpu))
 
@@ -189,7 +185,7 @@ class UnetModel():
                 number of 224x224 patches to run simultaneously on the GPU
                 (can make smaller or bigger depending on GPU memory usage)
 
-            channels: list (optional, default None)
+            chan(2, 224, 224)nels: list (optional, default None)
                 list of channels, either of length 2 or of length number of images by 2.
                 First element of list is the channel to segment (0=grayscale, 1=red, 2=green, 3=blue).
                 Second element of list is the optional nuclear channel (0=none, 1=red, 2=green, 3=blue).
@@ -342,21 +338,18 @@ class UnetModel():
         X = self._to_device(x)
         if self.torch:
             self.net.eval()
-            if self.mkldnn:
-                self.net = mkldnn_utils.to_mkldnn(self.net)
             with torch.no_grad():
-                y, style = self.net(X)
-        else:
-            y, style = self.net(X)
-        if self.mkldnn:
-            self.net.to(torch_CPU)
-        y = self._from_device(y)
-        style = self._from_device(style)
+                X1 = self.net(X)
+
+        cellpose_output = self._from_device(X1['cellpose_output'])
+        reconstruction_output = self._from_device(X1['reconstruction_output'])
+        gedi_output = self._from_device(X1['gedi_output'])
+        style = self._from_device(X1['style0'])
         if return_conv:
             conv = self._from_device(conv)
             y = np.concatenate((y, conv), axis=1)
         
-        return y, style
+        return cellpose_output, reconstruction_output, gedi_output, style
                 
     def _run_nets(self, img, net_avg=True, augment=False, tile=True, tile_overlap=0.1, bsize=224, 
                   return_conv=False, progress=None):
@@ -579,7 +572,8 @@ class UnetModel():
             y = np.zeros((IMG.shape[0], nout, ly, lx))
             for k in range(niter):
                 irange = np.arange(batch_size*k, min(IMG.shape[0], batch_size*k+batch_size))
-                y0, style = self.network(IMG[irange], return_conv=return_conv)
+                cellpose_output, reconstruction_output, gedi_output, style = self.network(IMG[irange], return_conv=return_conv)
+                y0 = cellpose_output
                 y[irange] = y0.reshape(len(irange), y0.shape[-3], y0.shape[-2], y0.shape[-1])
                 if k==0:
                     styles = style[0]
@@ -681,6 +675,21 @@ class UnetModel():
         lbl = self._to_device(lbl)
         loss = 8 * 1./self.nclasses * self.criterion(y, lbl)
         return loss
+    
+    def ae_loss_fn(self, lbl, y):
+        """Categorical crossentropy loss for autoeencoding images."""
+        loss = nn.CrossEntropyLoss(reduction="none") 
+
+        return loss(y, lbl).mean()
+
+    def gedi_loss_fn(self, lbl, y):
+        """Categorical crossentropy loss ."""
+        loss = nn.CrossEntropyLoss()
+       
+        return loss(y, lbl)
+
+
+
 
     def train(self, train_data, train_labels, train_files=None, 
               test_data=None, test_labels=None, test_files=None,
@@ -762,26 +771,58 @@ class UnetModel():
         return cell_threshold, boundary_threshold
 
     def _train_step(self, x, lbl):
+        weight = { "cellpose": 0.1,
+                    "reconstruction_loss": 0.1,
+                    "gedi_loss" :0.1
+
+            # Add ypur loss weights here. Default to 1.
+            }
+        
+
         X = self._to_device(x)
         if self.torch:
             self.optimizer.zero_grad()
-            #if self.gpu:
-            #    self.net.train() #.cuda()
-            #else:
+            segmentation_label = lbl["segmentation_labels"]
+            cp_labels = lbl['cp_labels']
+            gedi_label = lbl["gedi_labels"]
+
+
             self.net.train()
-            y = self.net(X)[0]
-            loss = self.loss_fn(lbl,y)
+            ae_label =  X[:, 0] 
+            # ((X[:,0] + 0.5) * 255).long()      
+            ae_label = (ae_label - ae_label.min()) / (ae_label.max() - ae_label.min())
+            ae_label = (ae_label * 255).long() 
+            outputs = self.net(X)  # [0]
+
+            cellpose_output = outputs["cellpose_output"]
+            reconstruction_output = outputs["reconstruction_output"]
+            gedi_output = outputs["gedi_output"]
+
+
+            cellpose_loss = self.loss_fn(cp_labels,cellpose_output)
+            print("\ncellpose", cellpose_loss)
+
+            reconstruction_loss = self.ae_loss_fn(ae_label, reconstruction_output)
+            print("Reconstruction", reconstruction_loss)
+
+            if gedi_label is None:
+                gedi_loss = 0
+            else:
+                gedi_loss = self.gedi_loss_fn(gedi_label, gedi_output)
+            
+            print("Gedi loss", gedi_loss)
+           
+
+            loss = (
+                    cellpose_loss * weight["cellpose"] +
+                    reconstruction_loss * weight["reconstruction_loss"] +
+                    gedi_loss * weight["gedi_loss"]
+                    )
             loss.backward()
             train_loss = loss.item()
             self.optimizer.step()
             train_loss *= len(x)
-        else:
-            with mx.autograd.record():
-                y = self.net(X)[0]
-                loss = self.loss_fn(lbl, y)
-            loss.backward()
-            train_loss = nd.sum(loss).asscalar()
-            self.optimizer.step(x.shape[0])
+        
         return train_loss
 
     def _test_eval(self, x, lbl):
@@ -793,10 +834,7 @@ class UnetModel():
                 loss = self.loss_fn(lbl,y)
                 test_loss = loss.item()
                 test_loss *= len(x)
-        else:
-            y, style = self.net(X)
-            loss = self.loss_fn(lbl, y)
-            test_loss = nd.sum(loss).asnumpy()
+
         return test_loss
 
     def _set_optimizer(self, learning_rate, momentum, weight_decay, SGD=False):
@@ -810,17 +848,12 @@ class UnetModel():
                                             eps=1e-08, weight_decay=weight_decay)
                 core_logger.info('>>> Using RAdam optimizer')
                 self.optimizer.current_lr = learning_rate
-        else:
-            self.optimizer = gluon.Trainer(self.net.collect_params(), 'sgd',{'learning_rate': learning_rate,
-                                'momentum': momentum, 'wd': weight_decay})
 
     def _set_learning_rate(self, lr):
         if self.torch:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
-        else:
-            self.optimizer.set_learning_rate(lr)
-
+      
     def _set_criterion(self):
         if self.unet:
             if self.torch:
@@ -860,10 +893,10 @@ class UnetModel():
 
         # compute average cell diameter
         if rescale:
-            diam_train = np.array([utils.diameters(train_labels[k][0],omni=self.omni)[0] for k in range(len(train_labels))])
+            diam_train = np.array([utils.diameters(train_labels['cp_labels'][k][0],omni=self.omni)[0] for k in range(len(train_labels['cp_labels']))])
             diam_train[diam_train<5] = 5.
             if test_data is not None:
-                diam_test = np.array([utils.diameters(test_labels[k][0],omni=self.omni)[0] for k in range(len(test_labels))])
+                diam_test = np.array([utils.diameters(test_labels['cp_labels'][k][0],omni=self.omni)[0] for k in range(len(test_labels['cp_labels']))])
                 diam_test[diam_test<5] = 5.
             scale_range = 0.5
             core_logger.info('>>>> median diameter set to = %d'%self.diam_mean)
@@ -923,12 +956,29 @@ class UnetModel():
                 inds = rperm[ibatch:ibatch+batch_size]
                 rsc = diam_train[inds] / self.diam_mean if rescale else np.ones(len(inds), np.float32)
                 # now passing in the full train array, need the labels for distance field
+
+                #@ ToDo: Remeber per pixel augmentation
                 imgi, lbl, scale = transforms.random_rotate_and_resize(
-                                        [train_data[i] for i in inds], Y=[train_labels[i] for i in inds],
+                                        [train_data[i] for i in inds], Y=[train_labels['cp_labels'][i] for i in inds],
                                         rescale=rsc, scale_range=scale_range, unet=self.unet, inds=inds, omni=self.omni)
                 if self.unet and lbl.shape[1]>1 and rescale:
                     lbl[:,1] /= diam_batch[:,np.newaxis,np.newaxis]**2
-                train_loss = self._train_step(imgi, lbl)
+                
+                if train_labels['gedi_labels'] is not None:
+                    gdlbl = train_labels['gedi_labels'][inds]
+                else:
+                    gdlbl = None
+                
+                if train_labels['segmentation_labels'] is not None:
+                    seglbl = train_labels['segmentation_labels'][inds]
+                else:
+                    seglbl = None
+
+                lbl_batch = {'cp_labels': lbl,
+                             'gedi_labels': gdlbl,
+                             'segmentation_labels' : seglbl}
+                
+                train_loss = self._train_step(imgi, lbl_batch)
                 lavg += train_loss
                 nsum += len(imgi) 
             
